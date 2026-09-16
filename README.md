@@ -14,6 +14,17 @@ anteriores estão em [`docs/INSTALLER_KB.md`](docs/INSTALLER_KB.md).
 
 `install`, `doctor`, `upgrade`, `backup`, `restore` e `uninstall` implementados.
 
+## Baixar
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dieg0CLima/olt_installer/master/olt-install.sh -o olt-install.sh
+chmod +x olt-install.sh
+```
+
+As imagens (`ghcr.io/dieg0clima/olt_system`/`olt_web`) são privadas — `docker login
+ghcr.io` (token com escopo `read:packages`) antes de instalar, ou peça pra tornar os
+pacotes públicos.
+
 ## Uso
 
 ```bash

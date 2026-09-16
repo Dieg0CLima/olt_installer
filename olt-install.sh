@@ -24,6 +24,7 @@ DEFAULT_DISK_MB=1024
 : "${OLT_SYSTEM_CORS_ORIGINS:=}"
 : "${OLT_WEB_API_BASE_URL:=}"
 : "${OLT_WEB_HTTP_PORT:=}"
+: "${OLT_SYSTEM_WEB_PORT:=}"
 : "${DB_MODE:=}"
 : "${OLT_SYSTEM_DB_HOST:=}"
 : "${OLT_SYSTEM_DB_PORT:=}"
@@ -32,6 +33,8 @@ DEFAULT_DISK_MB=1024
 : "${OLT_SYSTEM_DB_NAME:=}"
 : "${OLT_SYSTEM_SECRET_KEY_BASE:=}"
 : "${OLT_SYSTEM_ENCRYPTION_KEY:=}"
+: "${OLT_SYSTEM_ADMIN_EMAIL:=}"
+: "${OLT_SYSTEM_ADMIN_PASSWORD:=}"
 : "${QUIET:=no}"
 : "${VERBOSE:=no}"
 : "${DRY_RUN:=no}"
@@ -167,6 +170,7 @@ confirm() {
 
 is_port()      { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
 is_url()       { [[ "$1" =~ ^https?://[^[:space:]]+$ ]]; }
+is_email()     { [[ "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[a-zA-Z]{2,}$ ]]; }
 is_nonempty()  { [ -n "$1" ]; }
 is_image_tag() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
 is_db_mode()   { [ "$1" = external ] || [ "$1" = self-hosted ]; }
@@ -214,9 +218,11 @@ OLT_SYSTEM_IMAGE=${IMAGE_REPO_NS}/olt_system:${IMAGE_TAG}
 OLT_WEB_IMAGE=${IMAGE_REPO_NS}/olt_web:${IMAGE_TAG}
 OLT_SYSTEM_SECRET_KEY_BASE=${OLT_SYSTEM_SECRET_KEY_BASE}
 OLT_SYSTEM_ENCRYPTION_KEY=${OLT_SYSTEM_ENCRYPTION_KEY}
+OLT_SYSTEM_ADMIN_EMAIL=${OLT_SYSTEM_ADMIN_EMAIL}
+OLT_SYSTEM_ADMIN_PASSWORD=${OLT_SYSTEM_ADMIN_PASSWORD}
 OLT_SYSTEM_HOST=${OLT_SYSTEM_HOST}
 OLT_SYSTEM_CORS_ORIGINS=${OLT_SYSTEM_CORS_ORIGINS}
-OLT_SYSTEM_WEB_PORT=4000
+OLT_SYSTEM_WEB_PORT=${OLT_SYSTEM_WEB_PORT}
 OLT_SYSTEM_DB_HOST=${OLT_SYSTEM_DB_HOST}
 OLT_SYSTEM_DB_PORT=${OLT_SYSTEM_DB_PORT}
 OLT_SYSTEM_DB_USER=${OLT_SYSTEM_DB_USER}
@@ -260,9 +266,10 @@ write_env() {
 # Parser seguro de --config (KEY=VALUE, sem `source`, whitelist de chaves)
 # ---------------------------------------------------------------------------
 OLT_CONFIG_KEYS=(
-  INSTALL_DIR IMAGE_TAG OLT_SYSTEM_HOST OLT_SYSTEM_CORS_ORIGINS
+  INSTALL_DIR IMAGE_TAG OLT_SYSTEM_HOST OLT_SYSTEM_WEB_PORT OLT_SYSTEM_CORS_ORIGINS
   OLT_WEB_API_BASE_URL OLT_WEB_HTTP_PORT DB_MODE OLT_SYSTEM_DB_HOST
   OLT_SYSTEM_DB_PORT OLT_SYSTEM_DB_USER OLT_SYSTEM_DB_PASSWORD OLT_SYSTEM_DB_NAME
+  OLT_SYSTEM_ADMIN_EMAIL
 )
 
 is_known_config_key() {
@@ -514,6 +521,22 @@ run_migration() {
   return 1
 }
 
+# run_seed — roda Web.Release.seed/0 (bootstrap do admin + catálogo de OIDs SNMP) —
+# só faz sentido DEPOIS de run_migration ter sucesso (schema precisa existir antes
+# do boot normal da app usar os repos). Também idempotente, seguro chamar sempre.
+#
+# `rpc`, não `eval` — achado real testando contra um container de verdade: `eval`
+# roda em uma VM nova, não-booted (código carregado, mas a árvore de supervisão da
+# aplicação nunca sobe), então `Auth.Repo`/`Persistence.Repo` não existem nesse
+# contexto (`RuntimeError: could not lookup Ecto repo`). `rpc` executa no NÓ JÁ
+# RODANDO (o processo principal do container, subido via `bin/olt_system start`),
+# onde os repos já estão supervisionados de verdade — só isso resolve. `migrate/0`
+# continua via `eval` de propósito: `Ecto.Migrator.with_repo/2` sobe sua própria
+# conexão isolada, funciona igual com ou sem a app já rodando.
+run_seed() {
+  run_in_dir "$INSTALL_DIR" "${COMPOSE[@]}" exec -T api bin/olt_system rpc "Web.Release.seed()"
+}
+
 do_backup() {
   [ -f "$INSTALL_DIR/.env" ] || die "Nenhuma instalação encontrada em $INSTALL_DIR."
   infer_db_mode_from_env
@@ -623,6 +646,12 @@ services:
       OLT_SYSTEM_DB_PASSWORD: "${OLT_SYSTEM_DB_PASSWORD:?set OLT_SYSTEM_DB_PASSWORD}"
       OLT_SYSTEM_DB_NAME: "${OLT_SYSTEM_DB_NAME:?set OLT_SYSTEM_DB_NAME}"
       OLT_SYSTEM_DB_POOL_SIZE: "${OLT_SYSTEM_DB_POOL_SIZE:-10}"
+      # Lidas só por apps/auth/priv/repo/seeds.exs (Web.Release.seed/0, olt_installer)
+      # — nunca pelo boot normal do Endpoint. Sem default aqui de propósito: o
+      # fallback "change-me-in-production" do próprio seeds.exs é só pra dev, o
+      # instalador sempre gera/pergunta um valor real.
+      OLT_SYSTEM_ADMIN_EMAIL: "${OLT_SYSTEM_ADMIN_EMAIL:?set OLT_SYSTEM_ADMIN_EMAIL}"
+      OLT_SYSTEM_ADMIN_PASSWORD: "${OLT_SYSTEM_ADMIN_PASSWORD:?set OLT_SYSTEM_ADMIN_PASSWORD}"
     ports:
       - "${OLT_SYSTEM_WEB_PORT:-4000}:4000"
 
@@ -683,7 +712,8 @@ cmd_install() {
     warn "Não consegui detectar um IPv4 do host — usando 'localhost' como default. Ajuste se a instalação precisar ser acessada de fora desta máquina."
   fi
   ask_valid OLT_SYSTEM_HOST "Host/IP público desta instalação" "${OLT_SYSTEM_HOST:-$detected_ip}" is_nonempty "Informe um host ou IP."
-  ask_valid OLT_WEB_API_BASE_URL "URL pública da API (o navegador do operador vai chamar isto)" "${OLT_WEB_API_BASE_URL:-http://${OLT_SYSTEM_HOST}:4000}" is_url "Informe uma URL http(s)://..."
+  ask_valid OLT_SYSTEM_WEB_PORT "Porta HTTP da API, publicada no host" "${OLT_SYSTEM_WEB_PORT:-4000}" is_port "Informe uma porta válida (1-65535)."
+  ask_valid OLT_WEB_API_BASE_URL "URL pública da API (o navegador do operador vai chamar isto)" "${OLT_WEB_API_BASE_URL:-http://${OLT_SYSTEM_HOST}:${OLT_SYSTEM_WEB_PORT}}" is_url "Informe uma URL http(s)://..."
   ask_valid OLT_SYSTEM_CORS_ORIGINS "Origem do frontend, permitida por CORS" "${OLT_SYSTEM_CORS_ORIGINS:-http://${OLT_SYSTEM_HOST}}" is_nonempty "Informe ao menos uma origem (ex.: http://${OLT_SYSTEM_HOST})."
   ask_valid OLT_WEB_HTTP_PORT "Porta HTTP do frontend" "${OLT_WEB_HTTP_PORT:-80}" is_port "Informe uma porta válida (1-65535)."
 
@@ -704,9 +734,14 @@ cmd_install() {
     secret_or_keep OLT_SYSTEM_DB_PASSWORD gen_alnum 32
   fi
 
+  ask_valid OLT_SYSTEM_ADMIN_EMAIL "E-mail do primeiro usuário administrador" "${OLT_SYSTEM_ADMIN_EMAIL:-admin@olt.local}" is_email "Informe um e-mail válido."
+
   secret_or_keep OLT_SYSTEM_SECRET_KEY_BASE gen_hex 64
   secret_or_keep OLT_SYSTEM_ENCRYPTION_KEY gen_b64 32
-  [ -n "$NEW_SECRETS" ] && log "Segredos gerados nesta execução:${NEW_SECRETS}"
+  secret_or_keep OLT_SYSTEM_ADMIN_PASSWORD gen_alnum 24
+  if [ -n "$NEW_SECRETS" ]; then
+    log "Segredos gerados nesta execução:${NEW_SECRETS}"
+  fi
 
   hr
   log "${C_BOLD}Pré-flight${C_RESET}"
@@ -721,10 +756,12 @@ cmd_install() {
   check_disk "$INSTALL_DIR" "$DEFAULT_DISK_MB"
 
   check_port_free "$OLT_WEB_HTTP_PORT" tcp "web" || fail_or_warn "Porta ${OLT_WEB_HTTP_PORT}/tcp precisa estar livre para o frontend."
-  check_port_free 4000 tcp "api" || fail_or_warn "Porta 4000/tcp precisa estar livre para a API."
+  check_port_free "$OLT_SYSTEM_WEB_PORT" tcp "api" || fail_or_warn "Porta ${OLT_SYSTEM_WEB_PORT}/tcp precisa estar livre para a API."
 
   if [ "$DB_MODE" = self-hosted ]; then
-    check_port_free 5432 tcp "db (self-hosted)" || fail_or_warn "Porta 5432/tcp precisa estar livre para o Postgres self-hosted."
+    : # `db` (self-hosted) nunca publica porta pro host (docker-compose.prod.yml) —
+      # só é alcançado por `api` na rede interna do Compose, então não há porta 5432
+      # do HOST pra checar aqui.
   else
     check_postgres_reachable "$OLT_SYSTEM_DB_HOST" "$OLT_SYSTEM_DB_PORT"
   fi
@@ -739,9 +776,11 @@ cmd_install() {
   printf '  %-28s %s\n' "Host público:" "$OLT_SYSTEM_HOST"
   printf '  %-28s %s\n' "URL da API:" "$OLT_WEB_API_BASE_URL"
   printf '  %-28s %s\n' "CORS allowed origins:" "$OLT_SYSTEM_CORS_ORIGINS"
+  printf '  %-28s %s\n' "Porta da API:" "$OLT_SYSTEM_WEB_PORT"
   printf '  %-28s %s\n' "Porta do frontend:" "$OLT_WEB_HTTP_PORT"
   printf '  %-28s %s\n' "Modo de banco:" "$DB_MODE"
   printf '  %-28s %s:%s\n' "Postgres:" "$OLT_SYSTEM_DB_HOST" "$OLT_SYSTEM_DB_PORT"
+  printf '  %-28s %s\n' "E-mail do admin:" "$OLT_SYSTEM_ADMIN_EMAIL"
   hr
   confirm "Aplicar esta configuração?" s || die "Cancelado pelo operador."
 
@@ -768,6 +807,10 @@ cmd_install() {
   run_migration || fail_or_warn "Falha ao rodar a migração — investigue com: docker compose -f ${INSTALL_DIR}/docker-compose.yml logs api"
 
   hr
+  log "${C_BOLD}Aplicando dado inicial (admin + catálogo de OIDs)${C_RESET}"
+  run_seed || fail_or_warn "Falha ao aplicar o dado inicial — investigue com: docker compose -f ${INSTALL_DIR}/docker-compose.yml logs api"
+
+  hr
   log "${C_BOLD}Aguardando containers ficarem saudáveis e validando${C_RESET}"
   local overall_ok=yes
   post_up_validate || overall_ok=no
@@ -780,6 +823,12 @@ cmd_install() {
   fi
   log "  Frontend:  http://${OLT_SYSTEM_HOST}:${OLT_WEB_HTTP_PORT}/"
   log "  API:       ${OLT_WEB_API_BASE_URL}"
+  log "  Login:     ${OLT_SYSTEM_ADMIN_EMAIL}"
+  if [[ "$NEW_SECRETS" == *OLT_SYSTEM_ADMIN_PASSWORD* ]]; then
+    log "  Senha:     ${OLT_SYSTEM_ADMIN_PASSWORD} ${C_DIM}(gerada agora — troque depois do primeiro login)${C_RESET}"
+  else
+    log "  Senha:     (preservada de uma instalação anterior — ver ${INSTALL_DIR}/.env)"
+  fi
   log "  Segredos:  ${INSTALL_DIR}/.env (chmod 600)"
   hr
 }
@@ -812,7 +861,7 @@ cmd_doctor() {
   fi
 
   local key
-  for key in OLT_SYSTEM_SECRET_KEY_BASE OLT_SYSTEM_ENCRYPTION_KEY OLT_SYSTEM_CORS_ORIGINS OLT_SYSTEM_DB_HOST; do
+  for key in OLT_SYSTEM_SECRET_KEY_BASE OLT_SYSTEM_ENCRYPTION_KEY OLT_SYSTEM_ADMIN_EMAIL OLT_SYSTEM_ADMIN_PASSWORD OLT_SYSTEM_CORS_ORIGINS OLT_SYSTEM_DB_HOST; do
     if [ -n "$(env_get "$key")" ]; then
       ok "Chave presente: $key"
     else
@@ -904,6 +953,7 @@ cmd_upgrade() {
   # Recarrega do .env existente tudo que install pergunta mas upgrade não deve
   # perguntar de novo — só IMAGE_TAG muda.
   OLT_SYSTEM_HOST="$(env_get OLT_SYSTEM_HOST)"
+  OLT_SYSTEM_WEB_PORT="$(env_get OLT_SYSTEM_WEB_PORT)"
   OLT_SYSTEM_CORS_ORIGINS="$(env_get OLT_SYSTEM_CORS_ORIGINS)"
   OLT_WEB_API_BASE_URL="$(env_get OLT_WEB_API_BASE_URL)"
   OLT_WEB_HTTP_PORT="$(env_get OLT_WEB_HTTP_PORT)"
@@ -914,6 +964,8 @@ cmd_upgrade() {
   OLT_SYSTEM_DB_NAME="$(env_get OLT_SYSTEM_DB_NAME)"
   OLT_SYSTEM_SECRET_KEY_BASE="$(env_get OLT_SYSTEM_SECRET_KEY_BASE)"
   OLT_SYSTEM_ENCRYPTION_KEY="$(env_get OLT_SYSTEM_ENCRYPTION_KEY)"
+  OLT_SYSTEM_ADMIN_EMAIL="$(env_get OLT_SYSTEM_ADMIN_EMAIL)"
+  OLT_SYSTEM_ADMIN_PASSWORD="$(env_get OLT_SYSTEM_ADMIN_PASSWORD)"
   IMAGE_TAG="$to"
 
   printf '%s\n' "$COMPOSE_PROD" | write_file "$INSTALL_DIR/docker-compose.yml" 644
@@ -931,6 +983,10 @@ cmd_upgrade() {
   hr
   log "${C_BOLD}Rodando migração do banco${C_RESET}"
   run_migration || warn "Falha ao rodar a migração — verifique manualmente antes de confiar no upgrade."
+
+  hr
+  log "${C_BOLD}Reaplicando dado inicial (catálogo de OIDs)${C_RESET}"
+  run_seed || warn "Falha ao aplicar o dado inicial — verifique manualmente."
 
   hr
   log "${C_BOLD}Validação${C_RESET}"

@@ -70,6 +70,23 @@ retry curto (o container pode levar um instante pra aceitar `exec` logo após o
 seguro chamar em `install` E em `upgrade` sem precisar distinguir "banco novo" de
 "banco existente" — simplifica o fluxo em relação a checar isso explicitamente.
 
+**Bootstrap do admin (`Web.Release.seed/0`) é um passo separado — e precisa de
+`rpc`, não `eval`.** Achado real testando o `install` de ponta a ponta contra o
+container de verdade (não só `--dry-run`): um Postgres novo, mesmo já migrado, fica
+sem NENHUM usuário — `apps/auth/priv/repo/seeds.exs` (admin) e `apps/persistence/
+priv/repo/seeds.exs` (catálogo de OIDs) só rodavam via `mix run`, indisponível numa
+release. `Web.Release.seed/0` foi adicionado pra isso — mas rodá-lo via
+`bin/olt_system eval` (mesmo mecanismo de `migrate/0`) falhava com
+`RuntimeError: could not lookup Ecto repo Auth.Repo because it was not started`.
+`eval` executa a expressão numa VM NOVA, não-booted — carrega o código mas nunca
+chama `Application.start` pras apps da release, então `Auth.Repo`/`Persistence.Repo`
+simplesmente não existem nesse contexto (diferente de `migrate/0`, que usa
+`Ecto.Migrator.with_repo/2` — sobe sua PRÓPRIA conexão isolada, funciona com ou sem
+a app rodando). `rpc`, ao contrário, executa a expressão no NÓ JÁ RODANDO — o
+processo principal do container, subido via `bin/olt_system start` como `CMD` do
+Dockerfile — onde os repos já estão supervisionados de verdade. `run_seed()` usa
+`rpc`; `run_migration()` continua com `eval` de propósito, pelo motivo contrário.
+
 ## 6. Sem armadilha de porta privilegiada (nada equivalente à porta 53/systemd-resolved)
 
 A stack não compete por nenhuma porta que o sistema operacional já usa por padrão.
@@ -102,3 +119,18 @@ a intenção, não depende de lembrar de colar um `return 0`.
 legitimamente ser "falso" sem que isso signifique erro (um `[ cond ] && algo`
 opcional), ou é um `if`/`fi` completo, ou termina com `return 0` explícito — nunca
 deixe um `&&`/`||` sem rede de segurança ser o último comando executado.
+
+## 8. Porta da API configurável no host (`OLT_SYSTEM_WEB_PORT`)
+
+Não fazia parte do design inicial — só o `OLT_WEB_HTTP_PORT` (frontend) era
+perguntado, a porta da API ficava fixa em 4000. Corrigido pra ser perguntada igual
+ao frontend: o container SEMPRE escuta 4000 internamente (`docker-compose.prod.yml`
+mapeia `"${OLT_SYSTEM_WEB_PORT:-4000}:4000"` — lado direito fixo, só o esquerdo,
+publicado no host, é configurável), então mudar isso nunca exige tocar a imagem,
+só o `.env`. Achado ao rodar o `install` de ponta a ponta numa máquina que já tinha
+outro processo (o ambiente de dev do próprio `olt_system`) ocupando a porta 4000.
+
+Também removida a checagem de porta 5432 do HOST no modo `self-hosted` — o serviço
+`db` nunca publica porta pro host (só é alcançado por `api` na rede interna do
+Compose), então essa checagem estava validando algo que nunca seria de fato
+ocupado.
