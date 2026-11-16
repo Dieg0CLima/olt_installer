@@ -10,7 +10,7 @@
 set -Eeuo pipefail
 umask 077
 
-INSTALLER_VERSION="0.1.0"
+INSTALLER_VERSION="0.2.0"
 IMAGE_REPO_NS="ghcr.io/dieg0clima"
 DEFAULT_INSTALL_DIR="/opt/olt-system"
 DEFAULT_DISK_MB=1024
@@ -1137,6 +1137,25 @@ cmd_uninstall() {
 }
 
 # ---------------------------------------------------------------------------
+# stop
+# ---------------------------------------------------------------------------
+# Para os containers sem removê-los: `docker compose stop` mantém containers,
+# volumes, rede e .env intactos, e `docker compose start` volta a stack como
+# estava. Diferente de `uninstall`, que faz `down` e remove os containers.
+cmd_stop() {
+  detect_compose
+  [ -f "$INSTALL_DIR/.env" ] || die "Nenhuma instalação encontrada em $INSTALL_DIR."
+
+  run_in_dir "$INSTALL_DIR" "${COMPOSE[@]}" stop
+
+  if [ "$DRY_RUN" = yes ]; then
+    ok "Simulação (--dry-run) concluída — a stack seria parada (containers, volumes e dados preservados)."
+  else
+    ok "Stack parada. Containers, volumes e dados preservados. Para religar: docker compose -f ${INSTALL_DIR}/docker-compose.yml start"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 usage() {
@@ -1149,6 +1168,7 @@ Comandos:
   upgrade             atualiza a tag de imagem, com backup automático e rollback
   backup              arquiva .env, compose e (se self-hosted) o volume do Postgres
   restore ARQUIVO.tgz restaura um backup gerado por 'backup' (sobrescreve o destino)
+  stop                para os containers sem removê-los (volumes e dados preservados)
   uninstall           para e remove os containers (--purge também remove volumes)
 
 Opções:
@@ -1192,7 +1212,7 @@ parse_args() {
       printf 'olt-install.sh %s\n' "$INSTALLER_VERSION"
       exit 0
       ;;
-    install | doctor | upgrade | backup | uninstall)
+    install | doctor | upgrade | backup | stop | uninstall)
       COMMAND="$1"
       shift
       ;;
@@ -1204,7 +1224,7 @@ parse_args() {
         shift
       fi
       ;;
-    *) die "Comando desconhecido: '$1' (use install|doctor|upgrade|backup|restore|uninstall|--help)" ;;
+    *) die "Comando desconhecido: '$1' (use install|doctor|upgrade|backup|restore|stop|uninstall|--help)" ;;
   esac
 
   while [ $# -gt 0 ]; do
@@ -1280,6 +1300,7 @@ main() {
     upgrade) cmd_upgrade ;;
     backup) cmd_backup ;;
     restore) cmd_restore ;;
+    stop) cmd_stop ;;
     uninstall) cmd_uninstall ;;
     *)
       usage

@@ -120,6 +120,15 @@ expect_failure_containing "restore sem argumento morre pedindo o arquivo" \
   "Uso: olt-install.sh restore" restore --dir "$DIR_SELFHOSTED" --dry-run -y
 
 # ---------------------------------------------------------------------------
+# stop
+# ---------------------------------------------------------------------------
+expect_success_containing "stop --dry-run anuncia parada preservando dados" \
+  "containers, volumes e dados preservados" stop --dir "$DIR_SELFHOSTED" --dry-run -y
+
+expect_failure_containing "stop sem instalação existente morre" \
+  "Nenhuma instalação encontrada" stop --dir "$DIR_EMPTY" --dry-run -y
+
+# ---------------------------------------------------------------------------
 # uninstall
 # ---------------------------------------------------------------------------
 expect_success_containing "uninstall --dry-run sem --purge preserva volumes (mensagem)" \

@@ -12,7 +12,7 @@ anteriores estão em [`docs/INSTALLER_KB.md`](docs/INSTALLER_KB.md).
 
 ## Status
 
-`install`, `doctor`, `upgrade`, `backup`, `restore` e `uninstall` implementados.
+`install`, `doctor`, `upgrade`, `backup`, `restore`, `stop` e `uninstall` implementados.
 
 ## Baixar
 
@@ -53,6 +53,10 @@ sudo ./olt-install.sh backup --dir /opt/olt-system
 # Restaura um backup — SOBRESCREVE o que estiver em --dir, com backup
 # automático do que já existir antes de aplicar
 sudo ./olt-install.sh restore /opt/olt-system/backups/olt-system-backup-*.tgz
+
+# Para os containers sem removê-los; volumes, dados e .env ficam intactos.
+# Religa com: docker compose -f /opt/olt-system/docker-compose.yml start
+sudo ./olt-install.sh stop --dir /opt/olt-system
 
 # Para e remove os containers; volumes ficam
 sudo ./olt-install.sh uninstall --dir /opt/olt-system
@@ -143,7 +147,7 @@ scripts/sync-installer.sh --check
 tests/test-sync.sh          # o bloco embutido bate com a fonte?
 tests/test-preflight.sh     # validadores, geradores de segredo, idempotência do
                              # .env, parser de --config — sem Docker, sem root
-tests/test-lifecycle.sh     # upgrade/backup/restore/uninstall via --dry-run contra
+tests/test-lifecycle.sh     # upgrade/backup/restore/stop/uninstall via --dry-run contra
                              # um $INSTALL_DIR fake — sem tocar volume/container real
 shellcheck -s bash -S warning olt-install.sh scripts/*.sh tests/*.sh
 ```
